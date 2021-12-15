@@ -49,6 +49,35 @@ class Transformer(LightningModule):
             "loss": loss
         }
 
+# learn -> issue_1
+# issue_1 -> merge -> learn
+    def predict(self, X: torch.Tensor) -> torch.Tensor:
+        """
+        param X (N, 2, 2, L)
+        return label_ids (N, L)
+        """
+        # encoder 입력
+        src_ids, src_key_padding_mask = X[:, 0, 0], X[:, 0, 1]
+        # Y = 레이블
+        # decoder 입력
+        tgt_ids, tgt_key_padding_mask = X[:, 1, 0], X[:, 1, 1]
+        for time in range(0, self.hparams['max_length'] - 1):   # 0 -> L - 2
+            # ...   (N, L, H)
+            hidden = self.forward(src_ids, tgt_ids,
+                                  src_key_padding_mask, tgt_key_padding_mask)
+
+            cls = self.token_embeddings.weight  # (|V|, H)
+            # 행렬 곱을 해야한다.
+            logits = torch.einsum("nlh,vh->nlv", hidden, cls)   # ... -> (N 0th, L 1th, V 2nd)
+            ids = torch.argmax(logits, dim=2) # (N, L, V) -> (N,L)
+            # [BOS] 다음에 와야하는 단어의 아이디
+            next_ids = ids[: time] # (N, L) -> (N,)
+            tgt_ids[:, time + 1] = next_ids
+            tgt_key_padding_mask[: time+1] = 0
+
+        label_ids = tgt_ids
+        return label_ids
+
 class Encoder(torch.nn.Module):
     # raise NotImplementedError
     pass
