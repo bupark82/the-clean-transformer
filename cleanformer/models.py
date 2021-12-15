@@ -15,7 +15,7 @@ class Transformer(LightningModule):
         # raise NotImplementedError
         # 학습을 해야하는 레이어? 임베딩 테이블, 인코더, 디코더, 이 3가지를 학습해야한다.
         self.torken_embeddings = torch.nn.Embedding(num_embeddings=vocab_size, embedding_dim=hidden_size)
-        self.encoder = Encoder()
+        self.encoder = Encoder(hidden_size)
         self.decoder = Decoder()
         # self.classifier = torch.nn.Linear()
 
@@ -79,9 +79,56 @@ class Transformer(LightningModule):
         return label_ids
 
 class Encoder(torch.nn.Module):
-    # raise NotImplementedError
-    pass
+
+    def __init__(self, hidden_size: int):
+        super().__init__()
+        # 최적화 해야할 가중치를 정의
+        self.self_attention_layer = AttentionLayer(hidden_size)
+        # TODO -  ffn
+
+    def forward(self, x: torch.Tensor):
+        """
+        x: (N, L, H)
+        """
+        # 단어가 쓰인 문장에서 단어가 가지는 맥락을 임베딩 벡터에 인코딩 해준다
+        contexts = self.self_attention_layer.forward(q=x, k=x, v=x)
 
 class Decoder(torch.nn.Module):
     # raise NotImplementedError
     pass
+
+class AttentionLayer(torch.nn.Module):
+    # TODO - multi head attention
+
+    def __init__(self, hidden_size: int):
+        super().__init__()
+        self.linear_q = torch.nn.Linear(hidden_size, hidden_size)
+        self.linear_k = torch.nn.Linear(hidden_size, hidden_size)
+        self.linear_v = torch.nn.Linear(hidden_size, hidden_size)
+        self.linear_o = torch.nn.Linear(hidden_size, hidden_size)
+
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        """
+        q: (N, L, H)
+        k: (N, L, H)
+        v: (N, L, H)
+        return contexts (N, L, H)
+        """
+        q = self.linear_q(q)  # (N, L, H) * (H, H) -> (N, L, H)
+        k = self.linear_k(k)  # (N, L, H) * (H, H) -> (N, L, H)
+        v = self.linear_v(v)  # (N, L, H) * (H, H) -> (N, L, H)
+
+        # TODO - "scaled"
+
+        # "h" 차원에 대해서 벡터의 내적이 계산, 그렇게 h 차원은 reduce.
+        sims = torch.einsum("nlh,nlh->nll", q, k)  # (N, L, H) *  (N, L, H) -> (N, L, L)
+
+        # TODO - masking (auto-regressive)
+
+        attentions = torch.softmax(sims, dim=2)  # (N, q의 길이 L, k의 갈이 L <- 마지막 차원을 정규화)
+
+        # "j"차원에 대하여 벡터의 내적이 계산, 그렇게 j 차원은 reduce.
+        contexts = torch.einsum("nij,njh->nih", attentions, v)  # (N, L, L) * (N, L, H) -> (N, L, H)
+
+        contexts = self.linear_o(contexts)  # (N, L, H) -> N, L, H)
+        return contexts
