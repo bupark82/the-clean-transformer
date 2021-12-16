@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+    <head>
+        <title>First app</title>
+	    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    </head>
+    <body>
+
+        <h3>Inputed your kor word:</h3>
+        <div>{{ kor }}</div>
+
+        <h3>Translate:</h3>
+        <div>This translate is <strong>"{{ eng }}"</strong>
+        </div>
+
+        <div id='button'>
+        	  <form action="/">
+        	    <input type=submit value='Submit another review'>
+        	  </form>
+        </div>
+
+  </body>
+</html>
