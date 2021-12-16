@@ -3,8 +3,7 @@ import torch
 from pytorch_lightning import LightningModule
 from pytorch_lightning.utilities.types import EVAL_DATALOADERS, TRAIN_DATALOADERS
 from torch.nn import functional as F
-
-from cleanformer.tensors import subsequent_mask
+from cleanformer import tensors
 
 
 class Transformer(LightningModule):
@@ -37,7 +36,7 @@ class Transformer(LightningModule):
         self.decoder = Decoder(hidden_size, heads, max_length)
 
     def forward(self, src_ids: torch.LongTensor, tgt_ids: torch.Tensor,
-                src_key_padding_mask: torch.Tensor, tgt_key_padding_mask: torch.Tensor) -> torch.Tensor:
+                src_key_padding_mask: torch.LongTensor, tgt_key_padding_mask: torch.LongTensor) -> torch.Tensor:
         """
         src_ids: (N, L)
         tgt_ids: (N, L)
@@ -48,8 +47,8 @@ class Transformer(LightningModule):
         tgt = self.token_embeddings(tgt_ids)  # (N, L) -> (N, L, H)
         # --- positional encoding --- #
         # TODO: 나중에
-        memory = self.encoder.forward(src)  # (N, L, H) -> (N, L, H)
-        hidden = self.decoder.forward(tgt, memory)  # (N, L, H) -> (N, L, H)
+        memory = self.encoder.forward(src, src_key_padding_mask)  # (N, L, H) -> (N, L, H)
+        hidden = self.decoder.forward(tgt, memory, tgt_key_padding_mask, src_key_padding_mask)  # (N, L, H) -> (N, L, H)
         return hidden
 
     # 학습을 진행하기 위해선 입력 & 레이블을 인자로 받는 함수를 정의해야한다.
@@ -119,13 +118,13 @@ class Encoder(torch.nn.Module):
         self.multi_head_self_atten_layer = MultiHeadAttentionLayer(hidden_size, heads, max_length, masked=False)
         # TODO: ffn, residual connection
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, x_key_padding_mask: torch.LongTensor):
         """
         x: (N, L, H)
         return contexts (맥락이 반영된 벡터)
         """
         # 단어가 쓰인 문장에서 단어가 가지는 맥락을 임베딩 벡터에 인코딩 해준다
-        contexts = self.multi_head_self_atten_layer.forward(q=x, k=x, v=x)
+        contexts = self.multi_head_self_atten_layer.forward(q=x, k=x, v=x, key_padding_mask=x_key_padding_mask)
         return contexts
 
 
@@ -138,15 +137,17 @@ class Decoder(torch.nn.Module):
         self.multi_head_encoder_decoder_atten_layer = MultiHeadAttentionLayer(hidden_size, hidden_size, max_length,
                                                                               masked=False)
 
-    def forward(self, x: torch.Tensor, memory: torch.Tensor):
+    def forward(self, x: torch.Tensor, memory: torch.Tensor, x_key_padding_mask: torch.LongTensor,
+                memory_key_padding_mask: torch.LongTensor):
         """
         x: (N, L, H)
         memory: (N, L, H) - 인코더의 출력 (한국어 문장에 대한 기억)
         return contexts (맥락이 반영된 벡터)
         """
         # 단어가 쓰인 문장에서 단어가 가지는 맥락을 임베딩 벡터에 인코딩 해준다
-        contexts = self.masked_multi_head_self_atten_layer.forward(q=x, k=x, v=x)
-        alignments = self.multi_head_encoder_decoder_atten_layer.forward(q=contexts, k=memory, v=memory)
+        contexts = self.masked_multi_head_self_atten_layer.forward(q=x, k=x, v=x, key_padding_mask=x_key_padding_mask)
+        alignments = self.multi_head_encoder_decoder_atten_layer.forward(q=contexts, k=memory, v=memory,
+                                                                         key_padding_mask=memory_key_padding_mask)
         return alignments
         # TODO: ffn, residual connection
 
@@ -168,13 +169,15 @@ class MultiHeadAttentionLayer(torch.nn.Module):
         self.linear_o = torch.nn.Linear(hidden_size, hidden_size)
         # --- 상수 텐서를 register_buffer --- #
         # 나중에 model.device("cuda") 모델과 함께 상수텐서도 같이 GPU 로드.
-        self.register_buffer("subsequent_mask", subsequent_mask(max_length))
+        self.register_buffer("subsequent_mask", tensors.subsequent_mask(max_length))
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+                key_padding_mask: torch.LongTensor) -> torch.Tensor:
         """
         q: (N, L, H)
         k: (N, L, H)
         v: (N, L, H)
+        key_padding_mask: (N, L)
         return contexts (N, L, H)
         """
         N, _, _ = q.size()
@@ -192,15 +195,8 @@ class MultiHeadAttentionLayer(torch.nn.Module):
         # "h" 차원에 대해서 벡터의 내적이 계산, 그렇게 h 차원은 reduce.
         # (N, L, heads, head_size) *  (N, L, heads, head_size) -> (N, heads, L, L)
         sims = torch.einsum("nqhs,nkhs->nhqk", q, k)
-
-        # TODO - masking (auto-regressive)
-        if self.masked:
-            # subsequent masking 이 되지 않은 부분에 -inf
-            # masked_fill
-            # (L, L) -> (1, 1, L, L) -> (N, heads, L, L)
-            mask = self.subsequent_mask.reshape(1, 1, self.max_length, self.max_length) \
-                .expand(N, self.heads, -1, -1)
-            sims = torch.masked_fill(sims, mask == 0, value=float("-inf"))
+        mask = self.build_mask(key_padding_mask)
+        sims = torch.masked_fill(sims, mask == 0, value=float("-inf"))
         # key 차원에 대해서 정규화를 했기
         #  (N, heads, L, L)
         attentions = torch.softmax(sims, dim=3)  # (N, q의 길이 L, k의 갈이 L <- 마지막 차원을 정규화)
@@ -212,4 +208,23 @@ class MultiHeadAttentionLayer(torch.nn.Module):
         # 단순히 이어붙인 여러 의존관계를 join
         contexts = self.linear_o(contexts)  # (N, L, H) -> (N, L, H)
         return contexts
+
+    def build_mask(self, key_padding_mask: torch.LongTensor) -> torch.LongTensor:
+        """
+        key_padding_mask (N, L)
+        """
+        # padding mask는 모든 어텐션 레이어에 적용
+        # (N, L)-> (N, 1, 1, L) ->  (N,heads, L, L)
+        N, _ = key_padding_mask.size()
+        mask = key_padding_mask.reshape(N, 1, 1, self.max_length) \
+            .expand(-1, self.heads, self.max_length, -1)
+
+        if self.masked:
+            # subsequent masking 이 되지 않은 부분에 -inf
+            # masked_fill
+            # (L, L) -> (1, 1, L, L) -> (N, heads, L, L)
+            subsequent_mask = self.subsequent_mask.reshape(1, 1, self.max_length, self.max_length) \
+                .expand(N, self.heads, -1, -1)
+            mask = torch.logical_and(mask, subsequent_mask).long()
+        return mask
 
