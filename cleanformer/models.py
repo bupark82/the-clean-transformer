@@ -134,6 +134,9 @@ class Decoder(torch.nn.Module):
     def __init__(self, hidden_size: int, heads: int, max_length: int):
         super().__init__()
         self.masked_multi_head_self_atten_layer = MultiHeadAttentionLayer(hidden_size, heads, max_length, masked=True)
+        # 두번째 어텐션 레이어
+        self.multi_head_encoder_decoder_atten_layer = MultiHeadAttentionLayer(hidden_size, hidden_size, max_length,
+                                                                              masked=False)
 
     def forward(self, x: torch.Tensor, memory: torch.Tensor):
         """
@@ -143,7 +146,8 @@ class Decoder(torch.nn.Module):
         """
         # 단어가 쓰인 문장에서 단어가 가지는 맥락을 임베딩 벡터에 인코딩 해준다
         contexts = self.masked_multi_head_self_atten_layer.forward(q=x, k=x, v=x)
-        return contexts
+        alignments = self.multi_head_encoder_decoder_atten_layer.forward(q=contexts, k=memory, v=memory)
+        return alignments
         # TODO: ffn, residual connection
 
 
@@ -208,3 +212,4 @@ class MultiHeadAttentionLayer(torch.nn.Module):
         # 단순히 이어붙인 여러 의존관계를 join
         contexts = self.linear_o(contexts)  # (N, L, H) -> (N, L, H)
         return contexts
+
